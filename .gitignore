@@ -23,3 +23,4 @@ __pycache__/
 
 # ---- 常见编辑器杂项 ----
 .DS_Store
+.idea

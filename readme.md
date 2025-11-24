@@ -16,9 +16,11 @@ The system supports:
 
 This repository is meant both as an **interactive prototype** and a **research workflow** for studying AI procedural trust.
 
-[Main Coaching Interface](images/main_screen.png)
+![Main Coaching Interface](images/main_screen.png)
+*Figure 1. Main coaching screen where students receive rubric-aligned guidance.*
 
-[Evidence Vault + Rubric-aware Reasoning](images/evidence_card.png)
+![Evidence Vault + Rubric-aware Reasoning](images/evidence_card.png)
+*Figure 2. The Evidence Vault interface showing retrieved policy excerpts, relevance scores, and rubric-aligned reasoning supporting each critique. Users can expand or collapse evidence blocks, review raw text from institutional policies, and see how the system connects each piece of evidence to specific thesis requirements.*
 
 ## 🔲 **Procedural Model: Stage × Mode × Gap**
 
