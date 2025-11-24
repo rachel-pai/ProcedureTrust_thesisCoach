@@ -1,0 +1,25 @@
+# ---- 不上传的文件夹 ----
+archive/
+repo/
+rubrics/
+rubrics_extracted/
+logs/
+
+# ---- 不上传的敏感文件 ----
+.env
+
+# ---- 不上传的临时脚本 ----
+0_temp.py
+1_Minuer_extraction.py
+2_preprocess_corpora.py
+3_RawText_emb.py
+policy_docs_index_cleaned.json
+thesis_corpus_index_cleaned.json
+thesis_corpus_index.json
+# ---- Python 缓存 ----
+__pycache__/
+*.pyc
+*.pyo
+
+# ---- 常见编辑器杂项 ----
+.DS_Store

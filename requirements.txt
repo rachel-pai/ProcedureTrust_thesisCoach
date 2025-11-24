@@ -1,0 +1,7 @@
+streamlit
+openai>=1.0.0
+python-dotenv
+pdfplumber
+pydantic
+numpy
+markdown
