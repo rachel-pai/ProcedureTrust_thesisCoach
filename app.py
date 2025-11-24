@@ -2649,7 +2649,7 @@ label[data-testid="stWidgetLabel"] p {
                                 "enough_info": routing.get("enough_info", False),
                             }
                         )
-                        follow_status.write(f"You are on {routing.get("stage", align["stage"])}, {routing.get("mode", align["mode"])}, {routing.get("mode", align["mode"])}")
+                        follow_status.write(f"You are on {routing.get('stage', align['stage'])}, {routing.get('mode', align['mode'])}, {routing.get('mode', align['mode'])}")
                         count = st.session_state.followup_count
                         MAX_FOLLOWUP = 5
 
