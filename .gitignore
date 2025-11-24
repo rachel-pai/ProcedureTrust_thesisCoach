@@ -16,6 +16,7 @@ logs/
 policy_docs_index_cleaned.json
 thesis_corpus_index_cleaned.json
 thesis_corpus_index.json
+LightsailDefaultKey-eu-west-1.pem
 # ---- Python 缓存 ----
 __pycache__/
 *.pyc
