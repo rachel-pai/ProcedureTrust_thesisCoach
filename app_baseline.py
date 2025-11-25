@@ -12,18 +12,145 @@ import csv
 from datetime import datetime
 import markdown as md   # 👈 新增
 import re
+from sqlalchemy import create_engine, MetaData, Table, Column, Integer, String, Text, Float
+from sqlalchemy import DateTime
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import sessionmaker
+
+
 load_dotenv()
 
 # 模型配置
 OPENAI_MODEL = os.getenv("EBCS_MODEL", "gpt-5-mini")
 EMBED_MODEL = os.getenv("EBCS_EMBED_MODEL", "text-embedding-3-large")
-
 client = OpenAI()
-
 # # Baseline VS 路径
 # VS_DIR = Path("baseline_from_indexes_vs")
 # ENTRIES_PATH = VS_DIR / "baseline_from_idx_entries.json"
 # EMB_PATH = VS_DIR / "baseline_from_idx_embeddings.npy"
+
+# -----------------------
+# Database 配置（Lightsail Database）
+# -----------------------
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+
+DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
+engine = create_engine(DATABASE_URL, echo=False, future=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+metadata = MetaData()
+
+
+pre_survey_table = Table(
+    "pre_survey_baseline",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("timestamp", DateTime, nullable=False),
+    Column("user_id", String(50), nullable=False),
+    Column("stage", String(255)),
+    Column("domain_short", Text),
+    Column("rubric_familiarity", Integer),
+    Column("prior_exp_llm", Integer),
+    Column("prior_trust", Integer),
+    Column("topic_clarity", Integer),
+    Column("rq_confidence", Integer),
+    Column("rq_self_efficacy", Integer),
+    Column("method_self_efficacy", Integer),
+    Column("rubric_eval_knowledge", Integer),
+    Column("procedural_preference", Integer),
+    Column("procedural_acceptance", Integer),
+    Column("open_expectations", Text),
+)
+
+post_survey_table = Table(
+    "post_survey_baseline",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("timestamp", DateTime, nullable=False),
+    Column("user_id", String(50), nullable=False),
+    Column("perceived_usefulness", Integer),
+    Column("clarity_improved", Integer),
+    Column("trust_after", Integer),
+    Column("satisfaction", Integer),
+    Column("usability_ease", Integer),
+    Column("cognitive_load", Integer),
+    Column("perceived_procedural_fairness", Integer),
+    Column("perceived_transparency", Integer),
+    Column("procedural_rules_clarity", Integer),
+    Column("procedural_predictability", Integer),
+    Column("procedural_voice", Integer),
+    Column("evidence_engagement", Integer),
+    Column("evidence_cross_check", Integer),
+    Column("safety_support", Integer),
+    Column("trust_double_check", Integer),
+    Column("overtrust_concern", Integer),
+    Column("helpful_elements", Text),
+    Column("open_feedback", Text),
+)
+
+chat_turns_table = Table(
+    "chat_turns_baseline",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", String(50), nullable=False),
+    Column("turn_index", Integer, nullable=False),
+    Column("timestamp_question", DateTime, nullable=False),
+    Column("timestamp_answer", DateTime, nullable=False),
+    Column("question", Text),
+    Column("answer", Text),
+    Column("retrieved_ids", Text),
+    Column("retrieved_ranks", Text),
+    Column("retrieved_scores", Text),
+    Column("retrieved_source_types", Text),
+    Column("retrieved_doc_titles", Text),
+)
+
+snippet_clicks_table = Table(
+    "snippet_clicks_baseline",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("timestamp_click", DateTime, nullable=False),
+    Column("user_id", String(50), nullable=False),
+    Column("turn_index", Integer, nullable=False),
+    Column("action", String(20)),  # show / hide
+    Column("rank", Integer),
+    Column("snippet_id", String(255)),
+    Column("source_type", String(100)),
+    Column("score", Float),
+    Column("doc_title", Text),
+)
+#  create these tables only once
+metadata.create_all(engine)
+from datetime import datetime
+
+from sqlalchemy import insert
+
+def insert_pre_survey_row(row: dict):
+    with SessionLocal() as session:
+        stmt = insert(pre_survey_table).values(
+            timestamp=datetime.fromisoformat(row["timestamp"]),
+            user_id=row["user_id"],
+            stage=row["stage"],
+            domain_short=row["domain_short"],
+            rubric_familiarity=row["rubric_familiarity"],
+            prior_exp_llm=row["prior_exp_llm"],
+            prior_trust=row["prior_trust"],
+            topic_clarity=row["topic_clarity"],
+            rq_confidence=row["rq_confidence"],
+            rq_self_efficacy=row["rq_self_efficacy"],
+            method_self_efficacy=row["method_self_efficacy"],
+            rubric_eval_knowledge=row["rubric_eval_knowledge"],
+            procedural_preference=row["procedural_preference"],
+            procedural_acceptance=row["procedural_acceptance"],
+            open_expectations=row["open_expectations"],
+        )
+        session.execute(stmt)
+        session.commit()
 
 # -----------------------
 # 日志 & 问卷 CSV
@@ -474,10 +601,39 @@ def pre_survey_dialog():
             # open text
             "open_expectations": open_expectations,
         }
-        append_csv_row(PRE_FILE, fieldnames=list(row.keys()), row_dict=row)
+        insert_pre_survey_row(row)
+        # append_csv_row(PRE_FILE, fieldnames=list(row.keys()), row_dict=row)
 
         st.success("Thank you! You may now use the system.")
         st.rerun()
+
+
+def insert_post_survey_row(row: dict):
+    with SessionLocal() as session:
+        stmt = insert(post_survey_table).values(
+            timestamp=datetime.fromisoformat(row["timestamp"]),
+            user_id=row["user_id"],
+            perceived_usefulness=row["perceived_usefulness"],
+            clarity_improved=row["clarity_improved"],
+            trust_after=row["trust_after"],
+            satisfaction=row["satisfaction"],
+            usability_ease=row["usability_ease"],
+            cognitive_load=row["cognitive_load"],
+            perceived_procedural_fairness=row["perceived_procedural_fairness"],
+            perceived_transparency=row["perceived_transparency"],
+            procedural_rules_clarity=row["procedural_rules_clarity"],
+            procedural_predictability=row["procedural_predictability"],
+            procedural_voice=row["procedural_voice"],
+            evidence_engagement=row["evidence_engagement"],
+            evidence_cross_check=row["evidence_cross_check"],
+            safety_support=row["safety_support"],
+            trust_double_check=row["trust_double_check"],
+            overtrust_concern=row["overtrust_concern"],
+            helpful_elements=row["helpful_elements"],
+            open_feedback=row["open_feedback"],
+        )
+        session.execute(stmt)
+        session.commit()
 
 
 def maybe_show_pre_survey():
@@ -767,7 +923,8 @@ def post_survey_dialog():
             "helpful_elements": "; ".join(helpful_elements_selected),
             "open_feedback": open_feedback,
         }
-        append_csv_row(POST_FILE, fieldnames=list(row.keys()), row_dict=row)
+        insert_post_survey_row(row)
+        # append_csv_row(POST_FILE, fieldnames=list(row.keys()), row_dict=row)
 
         st.success("Thank you for your feedback!")
         st.rerun()
@@ -808,36 +965,30 @@ def retrieve_top_k(
     query: str,
     top_k: int = 6,
 ) -> List[Dict[str, Any]]:
-    """
-    在 Qdrant 的 BASELINE_COLLECTION 里做向量搜索，
-    返回结构尽量保持和原来 entries+emb_matrix 版本一致。
-    """
     q_vec = embed_text(query)
     client_q = get_qdrant_client()
 
-    hits = client_q.search(
-        collection_name=BASELINE_COLLECTION,
-        query_vector=q_vec,
+    # ✅ 注意这里：拿 .points
+    resp = client_q.query_points(
+        collection_name="baseline_vs",
+        query=q_vec.tolist(),   # 确保是 list[float]
         limit=top_k,
         with_payload=True,
     )
+    hits = resp.points        # 👈 真正的 ScoredPoint 列表
 
     results: List[Dict[str, Any]] = []
     for rank, h in enumerate(hits, start=1):
         p = h.payload or {}
-        # 兼容不同 payload 命名
         results.append(
             {
                 "rank": rank,
                 "score": float(h.score or 0.0),
-                # 原 baseline entries 里是 "id"；如果你导入 Qdrant 时用的是 "raw_id"，这里兜底一下
-                "id": p.get("id") or p.get("raw_id") or h.id,
+                "id": p.get("id") or h.id,
                 "source_type": p.get("source_type"),
                 "doc_title": p.get("doc_title"),
-                # baseline UI 下面会拿 source_id 去修图片链接，所以这里保留
                 "source_id": p.get("source_id") or p.get("source_path") or "",
                 "source_path": p.get("source_path"),
-                # 文本字段：你在 Qdrant 里可以叫 "text"、"source_chunk_md" 或 "raw_excerpt_md"
                 "text": p.get("text")
                         or p.get("source_chunk_md")
                         or p.get("raw_excerpt_md")
@@ -920,14 +1071,23 @@ def init_state():
     if "turn_counter" not in st.session_state:
         st.session_state.turn_counter = 0
 
+def insert_snippet_click_row(row: dict):
+    with SessionLocal() as session:
+        stmt = insert(snippet_clicks_table).values(
+            timestamp_click=datetime.fromisoformat(row["timestamp_click"]),
+            user_id=row["user_id"],
+            turn_index=row["turn_index"],
+            action=row["action"],
+            rank=row["rank"],
+            snippet_id=row["snippet_id"],
+            source_type=row["source_type"],
+            score=row["score"],
+            doc_title=row["doc_title"],
+        )
+        session.execute(stmt)
+        session.commit()
+
 def log_snippet_click(user_id: str, turn_index: int, snippet: Dict[str, Any], action: str):
-    """
-    记录每次点击 snippetX 的行为：
-    - user_id: 当前用户
-    - turn_index: 第几轮问答
-    - snippet: retrieve_top_k 返回的那一条 dict
-    - action: 'show' or 'hide'
-    """
     try:
         row = {
             "timestamp_click": datetime.utcnow().isoformat(),
@@ -940,7 +1100,7 @@ def log_snippet_click(user_id: str, turn_index: int, snippet: Dict[str, Any], ac
             "score": snippet.get("score"),
             "doc_title": snippet.get("doc_title") or snippet.get("source_id") or "",
         }
-        append_csv_row(SNIPPET_LOG_FILE, fieldnames=list(row.keys()), row_dict=row)
+        insert_snippet_click_row(row)
     except Exception as e:
         print("Failed to log snippet click:", e)
 
@@ -1026,6 +1186,24 @@ def toggle_snippet_panel(rank: int):
     else:
         st.session_state.show_snippet_panel = True
         st.session_state.selected_snippet_rank = rank
+
+def insert_chat_turn_row(row: dict):
+    with SessionLocal() as session:
+        stmt = insert(chat_turns_table).values(
+            user_id=row["user_id"],
+            turn_index=row["turn_index"],
+            timestamp_question=datetime.fromisoformat(row["timestamp_question"]),
+            timestamp_answer=datetime.fromisoformat(row["timestamp_answer"]),
+            question=row["question"],
+            answer=row["answer"],
+            retrieved_ids=row["retrieved_ids"],
+            retrieved_ranks=row["retrieved_ranks"],
+            retrieved_scores=row["retrieved_scores"],
+            retrieved_source_types=row["retrieved_source_types"],
+            retrieved_doc_titles=row["retrieved_doc_titles"],
+        )
+        session.execute(stmt)
+        session.commit()
 
 
 def main():
@@ -1186,7 +1364,7 @@ def main():
                                 for r in retrieved
                             ),
                         }
-                        append_csv_row(CHAT_LOG_FILE, fieldnames=list(row.keys()), row_dict=row)
+                        insert_chat_turn_row(row)
                     except Exception as e:
                         # 不要打断用户流程，失败就静默忽略或简单 print
                         print("Failed to log chat turn:", e)

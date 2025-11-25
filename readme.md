@@ -264,6 +264,30 @@ The app can be deployed to:
 
 Full deployment instructions can be generated on request.
 
+we use lightsail container to deploy + lightsail psql
+
+First to connect the database:
+```bash
+psql \
+  -h <YOUR_ENDPOINT> \
+  -p 5432 \
+  -U <USERNAME> \
+  -d <DB_NAME> \
+  sslmode=require
+```
+
+Then list all avaiable tables:
+```bash
+\dt
+```
+export the tables into local csvs. 
+```bash
+\copy pre_survey_baseline TO 'pre_survey.csv' CSV HEADER;
+\copy post_survey_baseline TO 'post_survey.csv' CSV HEADER;
+\copy chat_turns_baseline TO 'chat_turns.csv' CSV HEADER;
+\copy snippet_clicks_baseline TO 'snippet_clicks.csv' CSV HEADER;
+```
+
 ---
 
 # 📄 License

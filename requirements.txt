@@ -6,3 +6,5 @@ pydantic
 numpy
 markdown
 qdrant-client
+SQLAlchemy>=2.0
+psycopg2-binary>=2.9

@@ -13,8 +13,15 @@ from datetime import datetime
 import os
 import re
 import markdown as md  # 👈 新增
+from sqlalchemy import (
+    create_engine, MetaData, Table, Column,
+    Integer, String, Text, Float
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import sessionmaker
 
 load_dotenv()
+
 OPENAI_MODEL = os.getenv("EBCS_MODEL", "gpt-5-mini")
 EMBED_MODEL = os.getenv("EBCS_EMBED_MODEL", "text-embedding-3-large")
 # Qdrant
@@ -38,16 +45,109 @@ GAPS = ["content", "process", "knowledge", "precedent", "mixed", "unknown"]
 
 client = OpenAI()
 
-# 你可以根据需要改路径
-# 你原来有：
-LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
-PRE_FILE = LOG_DIR / "pre_survey_ebcs.csv"
-POST_FILE = LOG_DIR / "post_survey_ebcs.csv"
+# -----------------------
+# PostgreSQL / SQLAlchemy
+# -----------------------
+# Prefer a single DATABASE_URL if set, otherwise build from PG* env vars.
+DB_URL = os.getenv("DATABASE_URL")
+if not DB_URL:
+    DB_HOST = os.getenv("DB_HOST")
+    DB_PORT = os.getenv("DB_PORT", "5432")
+    DB_NAME = os.getenv("DB_NAME")
+    DB_USER = os.getenv("DB_USER")
+    DB_PASSWORD = os.getenv("DB_PASSWORD")
 
-# ✅ 新增：EBCS 版本的聊天轮次 & evidence 事件日志
-CHAT_LOG_FILE = LOG_DIR / "chat_turns_ebcs.csv"
-EVIDENCE_LOG_FILE = LOG_DIR / "evidence_events_ebcs.csv"
+    DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
+engine = create_engine(DATABASE_URL, echo=False, future=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+metadata = MetaData()
+
+pre_survey_ebcs_table = Table(
+    "pre_survey_ebcs", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("timestamp", Text),
+    Column("user_id", String(64)),
+    Column("stage", Text),
+    Column("domain_short", Text),
+    Column("rubric_familiarity", Integer),
+    Column("prior_exp_llm", Integer),
+    Column("prior_trust", Integer),
+    Column("topic_clarity", Integer),
+    Column("rq_confidence", Integer),
+    Column("rq_self_efficacy", Integer),
+    Column("method_self_efficacy", Integer),
+    Column("rubric_eval_knowledge", Integer),
+    Column("procedural_preference", Integer),
+    Column("procedural_acceptance", Integer),
+    Column("open_expectations", Text),
+)
+
+post_survey_ebcs_table = Table(
+    "post_survey_ebcs", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("timestamp", Text),
+    Column("user_id", String(64)),
+    Column("perceived_usefulness", Integer),
+    Column("perceived_procedural_fairness", Integer),
+    Column("perceived_transparency", Integer),
+    Column("trust_after", Integer),
+    Column("clarity_improved", Integer),
+    Column("cognitive_load", Integer),
+    Column("satisfaction", Integer),
+    Column("open_feedback", Text),
+    Column("usability_ease", Integer),
+    Column("procedural_rules_clarity", Integer),
+    Column("procedural_predictability", Integer),
+    Column("procedural_voice", Integer),
+    Column("evidence_engagement", Integer),
+    Column("evidence_cross_check", Integer),
+    Column("safety_support", Integer),
+    Column("trust_double_check", Integer),
+    Column("overtrust_concern", Integer),
+    Column("helpful_elements", Text),
+)
+
+chat_turns_ebcs_table = Table(
+    "chat_turns_ebcs", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", String(64)),
+    Column("turn_index", Integer),
+    Column("timestamp_question", Text),
+    Column("timestamp_answer", Text),
+    Column("question", Text),
+    Column("answer_overview", Text),
+    Column("answer_json", JSONB),
+    Column("stage", Text),
+    Column("mode", Text),
+    Column("gap", Text),
+    Column("retrieved_ids", Text),
+    Column("retrieved_source_types", Text),
+    Column("retrieved_doc_titles", Text),
+    Column("retrieved_scores", Text),
+)
+
+evidence_events_ebcs_table = Table(
+    "evidence_events_ebcs", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("timestamp_click", Text),
+    Column("user_id", String(64)),
+    Column("turn_index", Integer),
+    Column("event_type", String(64)),
+    Column("evid_id", String(64)),
+    Column("source_type", String(32)),
+    Column("doc_title", Text),
+    Column("score", Float),
+    Column("helpful", Float),
+    Column("tags", Text),
+    Column("rec_index", Integer),
+    Column("rec_title", Text),
+    Column("extra", JSONB),
+)
+
+# Create tables if they don't exist
+# metadata.create_all(engine)
 
 
 def append_csv_row(path: Path, fieldnames, row_dict):
@@ -482,7 +582,10 @@ def pre_survey_dialog():
             # 开放题
             "open_expectations": open_expectations,
         }
-        append_csv_row(PRE_FILE, fieldnames=list(row.keys()), row_dict=row)
+        with engine.begin() as conn:
+            conn.execute(pre_survey_ebcs_table.insert().values(**row))
+
+        # append_csv_row(PRE_FILE, fieldnames=list(row.keys()), row_dict=row)
 
         st.success("Thank you! You may now use the system.")
         st.rerun()
@@ -680,11 +783,12 @@ def post_survey_dialog():
     st.subheader("E. Interface elements")
 
     helpful_elements_options = [
-        "The general chat interface",
-        "The structured survey dialogs (pre / post questions themselves)",
-        "The separate sources / snippet buttons",
-        "The right-hand snippet panel with raw text",
-        "Seeing titles and similarity scores of retrieved snippets",
+        "Left-hand chat with the Thesis Coach (You / Coach messages)",
+        "Step cards on the left (e.g., ‘Step 1. Confirm administrative prerequisites’)",
+        "Rubric/evidence under each step (P1–rubric, T1-thesis etc.)",
+        "Evidence Vault panel on the right with highlighted snippet summary",
+        "Scrollable raw-text / PDF excerpt box under the Evidence Vault",
+        "Snippet metadata chips (document title, stage, mode, role, helpfulness score)",
         "Other elements (please describe in the text box below)",
         "None of the above were particularly helpful",
     ]
@@ -750,7 +854,10 @@ def post_survey_dialog():
             "overtrust_concern": overtrust_concern,
             "helpful_elements": "; ".join(helpful_elements_selected),
         }
-        append_csv_row(POST_FILE, fieldnames=list(row.keys()), row_dict=row)
+        # append_csv_row(POST_FILE, fieldnames=list(row.keys()), row_dict=row)
+        with engine.begin() as conn:
+            conn.execute(post_survey_ebcs_table.insert().values(**row))
+
 
         st.success("Thank you for your feedback!")
         st.rerun()
@@ -1162,11 +1269,9 @@ def log_chat_turn(
                 f"{e.meta.get('score', 0):.4f}" for e in evidence_cards
             ),
         }
-        append_csv_row(
-            CHAT_LOG_FILE,
-            fieldnames=list(row.keys()),
-            row_dict=row,
-        )
+        with engine.begin() as conn:
+            conn.execute(chat_turns_ebcs_table.insert().values(**row))
+
     except Exception as e:
         print("Failed to log EBCS chat turn:", e)
 
@@ -1206,11 +1311,9 @@ def log_evidence_event(
             # 额外字段 JSON 化（以防你之后想加更多信息）
             "extra": json.dumps(extra, ensure_ascii=False),
         }
-        append_csv_row(
-            EVIDENCE_LOG_FILE,
-            fieldnames=list(row.keys()),
-            row_dict=row,
-        )
+        with engine.begin() as conn:
+            conn.execute(evidence_events_ebcs_table.insert().values(**row))
+
     except Exception as e:
         print("Failed to log evidence event:", e)
 
@@ -2607,7 +2710,7 @@ label[data-testid="stWidgetLabel"] p {
             # 输入框：如果正在生成 或 已经有 last_plan，就不再显示输入框
             user_text = None
             if st.session_state.busy:
-                st.info("The coach is thinking…")
+                st.warning("Something is wrong, please refresh the page!")
             elif last_plan is not None:
                 # 你也可以换成 st.empty() 什么都不显示；下面只是友好提示
                 if not st.session_state.get("post_survey_done", False):
