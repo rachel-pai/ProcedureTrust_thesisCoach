@@ -1,20 +1,99 @@
-# 📘 **README: Procedural Trust — Thesis Coaching System**
+## 🎯 What the System Does
 
-## 🔍 Overview
+Thesis Coach provides:
 
-**ProceduralTrust** is a research system designed to study how procedural features of AI assistants influence user trust, transparency, and perceived fairness.
-It includes a **Streamlit-based interactive thesis-coaching application** powered by LLMs and policy-aligned retrieval, along with fully reproducible preprocessing pipelines, corpus indexing, and structured logging for research analysis.
+### 1. Step-by-step thesis guidance
 
-The system supports:
+The left panel delivers structured coaching steps (e.g., feasibility, ethics, methodology), dynamically adapted to the student’s progress and thesis domain.
 
-* 📄 **Thesis writing assistance**
-* 🔎 **Evidence-based critique** (LLM + policy retrieval)
-* 🧭 **Rubric-guided feedback generation**
-* 📚 **Policy and thesis corpus indexing**
-* 🔬 **Survey-based logging for experiments**
-* ⚖ **Baseline (non-procedural) comparison system**
+### 2. Rule-based transparency
 
-This repository is meant both as an **interactive prototype** and a **research workflow** for studying AI procedural trust.
+Each recommendation is linked to:
+
+- Rubrics (e.g., administrative prerequisites, ethics readiness, method criteria)  
+- Precedents and exemplars  
+- Methodological rules or program requirements  
+
+So students always see *why* the system gives a suggestion.
+
+### 3. Evidence Vault
+
+The right-hand panel displays:
+
+- Retrieved snippet summaries  
+- Raw text excerpts (scrollable)  
+- Snippet metadata (source, mode, role, similarity)  
+- Ethical or safety references when relevant  
+
+This helps avoid blind trust and encourages evidence-based academic decisions.
+
+### 4. Built-in safety and trust calibration
+
+The system includes:
+
+- Pre-survey for user intent + baseline measures  
+- Post-survey for procedural fairness, transparency, trust calibration, and usability  
+- Safe-guidance features that flag missing ethics prerequisites or risky research steps  
+
+### 5. Hybrid conversational + structured interaction
+
+Students can chat freely, but the system also:
+
+- Surfaces checklists  
+- Prompts for missing thesis components  
+- Verifies feasibility within realistic time constraints  
+- Helps users draft ethical protocols, methods, and study designs  
+
+---
+
+## 🛠️ Tech Stack
+
+- **Frontend / UI:** Streamlit  
+- **Backend:** Python  
+- **Database:** PostgreSQL (AWS Lightsail managed database)  
+- **Deployment:** AWS Lightsail container service  
+- **Data logging:** Pre / post surveys, chat turns, snippet clicks  
+- **LLM layer:** Retrieval-augmented generation for rubric-aware feedback  
+
+---
+
+## 🚀 Deployment & Data Export
+
+Full deployment instructions can be generated on request.
+
+This project is typically deployed using an **AWS Lightsail container** (for the Streamlit app) and **AWS Lightsail PostgreSQL** for storage.
+
+### 1. Connect to the Lightsail PostgreSQL database
+
+```bash
+psql \
+  -h <YOUR_ENDPOINT> \
+  -p 5432 \
+  -U <USERNAME> \
+  -d <DB_NAME> \
+  sslmode=require
+```
+
+### 2. List all available tables
+
+```bash
+\dt
+```
+
+### 3. Export survey and interaction logs to local CSV files
+
+```bash
+\copy pre_survey_baseline   TO 'pre_survey.csv'   CSV HEADER;
+\copy post_survey_baseline  TO 'post_survey.csv'  CSV HEADER;
+\copy chat_turns_baseline   TO 'chat_turns.csv'   CSV HEADER;
+\copy snippet_clicks_baseline TO 'snippet_clicks.csv' CSV HEADER;
+```
+
+These CSVs can then be analyzed in R, Python, or any statistical tool for user studies, UX evaluations, or model audits.
+
+---
+
+## 🖼️ Interface Overview
 
 ![Main Coaching Interface](images/main_screen.png)
 *Figure 1. Main coaching screen where students receive rubric-aligned guidance.*
@@ -22,11 +101,13 @@ This repository is meant both as an **interactive prototype** and a **research w
 ![Evidence Vault + Rubric-aware Reasoning](images/evidence_card.png)
 *Figure 2. The Evidence Vault interface showing retrieved policy excerpts, relevance scores, and rubric-aligned reasoning supporting each critique. Users can expand or collapse evidence blocks, review raw text from institutional policies, and see how the system connects each piece of evidence to specific thesis requirements.*
 
-## 🔲 **Procedural Model: Stage × Mode × Gap**
+---
+
+## 🔲 Procedural Model: Stage × Mode × Gap
 
 The Thesis Coach system is built around a **stage × mode × gap** model of procedural AI assistance.
 
-### **1. Stage — Where the student is in the thesis process**
+### 1. Stage — Where the student is in the thesis process
 
 Stages are derived from:
 
@@ -39,7 +120,7 @@ In the UI, stages appear as collapsible sections (e.g., *Step 1: Administrative 
 
 ---
 
-### **2. Mode — How the system presents procedural information**
+### 2. Mode — How the system presents procedural information
 
 Modes include:
 
@@ -54,7 +135,7 @@ Modes correspond to UI components such as the **Evidence Vault**, rubric tags, i
 
 ---
 
-### **3. Gap — What is missing from the student's plan**
+### 3. Gap — What is missing from the student's plan
 
 Gaps are inferred through:
 
@@ -72,239 +153,18 @@ For each step, the system:
 This forms a procedural feedback loop:
 **identify gap → justify gap → show evidence → propose action.**
 
-
 ---
 
-## 🧱 Repository Structure
+## 📊 Research & Evaluation Use
+
+The logging subsystem (surveys, chat turns, snippet interactions) is designed to support:
+
+* A/B tests of interface variants
+* Studies of trust calibration and over-reliance
+* Analyses of evidence use (e.g., snippet opening and scrolling)
+* Longitudinal tracking across thesis milestones
+
+If you’d like, I can add sections on **installation**, **environment variables**, and **running locally** next.
 
 ```
-ProceduralTrust/
-│
-├── app.py                      # Main Streamlit application (procedural version)
-├── app_baseline.py             # Baseline / non-procedural comparison interface
-│
-├── baseline_from_indexes_vs/   # Precomputed baseline index (embeddings + entries)
-├── policy_docs_index.json      # Main policy index for retrieval
-├── thesis_corpus_index.json      # Main thesis index for retrieval
-│
-├── logs/                       # CSV logs for pre-survey, post-survey, chat turns, evidence events
-│
-└── .env                        # Local secrets (ignored)
 ```
-
----
-
-# 🚀 Application Features
-
-### **1. Interactive Thesis Coaching App (`app.py`)**
-
-A multi-page Streamlit interface enabling:
-
-* Thesis topic input
-* Step-by-step coaching
-* Policy-based evidence retrieval
-* LLM explanations of retrieved text
-* Rubric-aligned feedback
-* Logging of all interactions (chat turns + evidence events)
-* Pre-survey & Post-survey integration
-
-Designed for controlled user studies around transparency and procedural features.
-
----
-
-### **2. Baseline System (`app_baseline.py`)**
-
-A simplified version of the app that:
-
-* Hides procedural elements
-* Removes evidence provenance
-* Removes rubrics
-* Offers more opaque LLM responses
-
-Used for **between-condition or within-condition comparisons** in trust/fairness experiments.
-
----
-
-### **3. Corpus Processing Pipeline**
-
-Scripts include:
-
-* **(1) Raw policy extraction**
-* **(2) Corpus cleaning + normalization**
-* **(3) Embedding generation (OpenAI text-embedding-3-large)**
-* **(4) Index creation for retrieval**
-
-These stages support reproducible academic workflows.
-
----
-
-### **4. Logging System (for research use)**
-
-The application logs:
-
-| Log File                   | Purpose                                     |
-| -------------------------- | ------------------------------------------- |
-| `pre_survey_ebcs.csv`      | Participant demographic + initial attitudes |
-| `post_survey_ebcs.csv`     | Post-interaction trust & fairness measures  |
-| `chat_turns_ebcs.csv`      | Every user ⇄ model turn                     |
-| `evidence_events_ebcs.csv` | Every time evidence is shown or hidden      |
-
-This enables easy statistical analysis (Python, R, SPSS, JASP, etc.).
-
----
-
-# 🛠 Installation & Setup
-
-### **1. Clone the repository**
-
-```bash
-git clone https://github.com/<your-username>/ProceduralTrust.git
-cd ProceduralTrust
-```
-
----
-
-### **2. Create a virtual environment**
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
----
-
-### **3. Install dependencies**
-
-```bash
-pip install -r requirements.txt
-```
-
----
-
-### **4. Create a `.env` file**
-
-```
-OPENAI_API_KEY=sk-xxxx
-EBCS_MODEL=gpt-5.1-mini
-EBCS_EMBED_MODEL=text-embedding-3-large
-```
-
-(Optional) Add custom paths:
-
-```
-POLICY_INDEX=policy_docs_index.json
-THESES_INDEX=thesis_corpus_index.json
-```
-
----
-
-# ▶ Running the Application
-
-### **Procedural (Full) version**
-
-```bash
-streamlit run app.py
-```
-
-### **Baseline (Opaque) version**
-
-```bash
-streamlit run app_baseline.py
-```
-
-Access the app at:
-
-```
-http://localhost:8501
-```
-
----
-
-# 🧪 Research Use & Experimental Data Collection
-
-The system was designed to support:
-
-* User studies
-* Trust measurement
-* Procedural transparency experiments
-* Behavioral logging
-* Mixed-methods research
-* HCI fairness & AI accountability work
-
-Logs can be found in `logs/` and easily exported or downloaded via Streamlit components.
-
----
-
-# 📦 Preprocessing Pipeline
-
-To rebuild indexes from scratch:
-
-```bash
-python 1_Minuer_extraction.py
-python 2_preprocess_corpora.py
-python 3_RawText_emb.py
-```
-
-Or manually clean index files:
-
-```bash
-python clean_json.py
-```
-
----
-
-# ☁ Deployment (Lightsail / EC2 / Streamlit Cloud)
-
-The app can be deployed to:
-
-* **Amazon Lightsail** (recommended for your setup)
-* **AWS EC2**
-* **Streamlit Community Cloud**
-* Docker containers (optional)
-
-Full deployment instructions can be generated on request.
-
-we use lightsail container to deploy + lightsail psql
-
-First to connect the database:
-```bash
-psql \
-  -h <YOUR_ENDPOINT> \
-  -p 5432 \
-  -U <USERNAME> \
-  -d <DB_NAME> \
-  sslmode=require
-```
-
-Then list all avaiable tables:
-```bash
-\dt
-```
-export the tables into local csvs. 
-```bash
-\copy pre_survey_baseline TO 'pre_survey.csv' CSV HEADER;
-\copy post_survey_baseline TO 'post_survey.csv' CSV HEADER;
-\copy chat_turns_baseline TO 'chat_turns.csv' CSV HEADER;
-\copy snippet_clicks_baseline TO 'snippet_clicks.csv' CSV HEADER;
-```
-
----
-
-# 📄 License
-
-(Add your chosen license here — MIT, Apache 2.0, CC BY-NC, etc.)
-
----
-
-# 🙏 Acknowledgements
-
-This system draws inspiration from research on:
-
-* Procedural justice
-* Explainability and transparency
-* Human–AI collaboration
-* Educational writing support systems
-* AI fairness and policy compliance
-
----
-
