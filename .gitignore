@@ -4,6 +4,7 @@ repo/
 rubrics/
 rubrics_extracted/
 logs/
+baseline_from_indexes_vs/
 
 # ---- 不上传的敏感文件 ----
 .env
@@ -16,7 +17,12 @@ logs/
 policy_docs_index_cleaned.json
 thesis_corpus_index_cleaned.json
 thesis_corpus_index.json
-LightsailDefaultKey-eu-west-1.pem
+thesis-coach.pem
+4_2_embed2qdrant_baseline.py
+4_embed2qdrant.py
+policy_docs_index.json
+aws_host.readme
+app_local.py
 # ---- Python 缓存 ----
 __pycache__/
 *.pyc

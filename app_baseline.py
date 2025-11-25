@@ -20,10 +20,10 @@ EMBED_MODEL = os.getenv("EBCS_EMBED_MODEL", "text-embedding-3-large")
 
 client = OpenAI()
 
-# Baseline VS 路径
-VS_DIR = Path("baseline_from_indexes_vs")
-ENTRIES_PATH = VS_DIR / "baseline_from_idx_entries.json"
-EMB_PATH = VS_DIR / "baseline_from_idx_embeddings.npy"
+# # Baseline VS 路径
+# VS_DIR = Path("baseline_from_indexes_vs")
+# ENTRIES_PATH = VS_DIR / "baseline_from_idx_entries.json"
+# EMB_PATH = VS_DIR / "baseline_from_idx_embeddings.npy"
 
 # -----------------------
 # 日志 & 问卷 CSV
@@ -36,6 +36,23 @@ POST_FILE = LOG_DIR / "post_survey_baseline.csv"
 CHAT_LOG_FILE = LOG_DIR / "chat_turns_baseline.csv"
 SNIPPET_LOG_FILE = LOG_DIR / "snippet_clicks_baseline.csv"
 
+
+from qdrant_client import QdrantClient
+
+# -----------------------
+# Qdrant 配置（Baseline 版）
+# -----------------------
+QDRANT_URL = os.getenv("QDRANT_URL")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
+# 这个 collection 名字你按自己在 Qdrant 里建的来改
+BASELINE_COLLECTION = os.getenv("QDRANT_BASELINE_COLLECTION")
+
+@st.cache_resource
+def get_qdrant_client():
+    return QdrantClient(
+        url=QDRANT_URL,
+        api_key=QDRANT_API_KEY,
+    )
 
 
 def append_csv_row(path: Path, fieldnames, row_dict):
@@ -102,40 +119,89 @@ def login_page():
 # =====
 def fix_raw_excerpt_md(raw_excerpt_md: str, source_path: str) -> str:
     """
-    Convert local relative markdown image links in the form:
+    1）把本地相对 markdown 图片链接：
         [alt](images/...xyz)
         ![alt](images/...xyz)
-    into:
-        https://delft-public-img.s3.eu-west-1.amazonaws.com/<path_without_repo>/images/...xyz
-    so Streamlit can render images correctly.
+       改成 S3 上的绝对路径；
+
+    2）把所有 markdown 链接/图片里的 URL 里的空格替换成 %20；
+
+    3a）如果发现形如  [xxx](https://... .jpg/.png) 这种“指向图片的普通链接”，
+        自动改成图片语法  ![xxx](https://... .jpg/.png)
+
+    3b）如果发现  alt 里有很多换行的超长图片写法，
+        统一收缩成  ![image](url)  避免 markdown 解析失败。
     """
 
-    if not raw_excerpt_md or not source_path:
+    if not raw_excerpt_md:
         return raw_excerpt_md
 
-    # Extract directory (e.g., "repo/ThesisA/auto" )
-    dir_path = os.path.dirname(source_path)
+    md_text = raw_excerpt_md
 
-    # Drop the "repo/" prefix
-    m = re.match(r"^repo[^/]*/(.*)$", dir_path)
-    if m:
-        dir_path_no_repo = m.group(1)
-    else:
-        dir_path_no_repo = dir_path
+    # ---------- 1. 处理本地相对路径 images/... -> S3 绝对路径 ----------
+    if source_path:
+        import os
+        dir_path = os.path.dirname(source_path)
 
-    IMG_BASE_URL = "https://delft-public-img.s3.eu-west-1.amazonaws.com/"
-    prefix = IMG_BASE_URL + dir_path_no_repo.strip("/") + "/"
+        # Drop "repo..." 前缀
+        m = re.match(r"^repo[^/]*/(.*)$", dir_path)
+        if m:
+            dir_path_no_repo = m.group(1)
+        else:
+            dir_path_no_repo = dir_path
 
-    # Match [..](images/file) or ![..](images/file)
-    pattern = re.compile(r'(!?\[[^\]]*\])\((?:\.?/)?(images/[^)\s]+)\)')
+        IMG_BASE_URL = "https://delft-public-img.s3.eu-west-1.amazonaws.com/"
+        prefix = IMG_BASE_URL + dir_path_no_repo.strip("/") + "/"
 
-    def _repl(m: re.Match) -> str:
-        alt = m.group(1)
-        rel = m.group(2)
-        full_url = prefix + rel
-        return f"{alt}({full_url})"
+        # 匹配 [..](images/...) 或 ![..](images/...)
+        pattern_local_img = re.compile(r'(!?\[[^\]]*\])\((?:\.?/)?(images/[^)\s]+)\)')
 
-    return pattern.sub(_repl, raw_excerpt_md)
+        def _repl_local(m: re.Match) -> str:
+            alt = m.group(1)
+            rel = m.group(2)
+            rel = rel.replace(" ", "%20")
+            full_url = prefix + rel
+            return f"{alt}({full_url})"
+
+        md_text = pattern_local_img.sub(_repl_local, md_text)
+
+    # ---------- 2. 所有 markdown URL 里的空格 -> %20 ----------
+    pattern_any_link = re.compile(r'(\]\()([^)]+)\)')
+
+    def _repl_space(m: re.Match) -> str:
+        url = m.group(2)
+        safe_url = url.replace(" ", "%20")
+        return f"]({safe_url})"
+
+    md_text = pattern_any_link.sub(_repl_space, md_text)
+
+    # ---------- 3a. 指向图片的普通链接 -> 图片语法 ----------
+    pattern_link_to_img = re.compile(
+        r'\[(?P<alt>[^\]]*)\]\((?P<url>https?://[^)\s]+\.(?:png|jpe?g|gif|svg))\)'
+    )
+
+    def _repl_link_to_img(m: re.Match) -> str:
+        alt = m.group("alt").strip()
+        url = m.group("url").strip()
+        return f"![{alt}]({url})"
+
+    md_text = pattern_link_to_img.sub(_repl_link_to_img, md_text)
+
+    # ---------- 3b. 多行 alt 的图片，统一压缩成 ![image](url) ----------
+    # 匹配：  ![ 任意多行文字 ](https://...jpg/png/gif/svg)
+    pattern_multiline_img = re.compile(
+        r'!\[(?P<alt>.*?)\]\((?P<url>https?://[^)\s]+\.(?:png|jpe?g|gif|svg))\)',
+        re.DOTALL,
+    )
+
+    def _repl_multiline_img(m: re.Match) -> str:
+        url = m.group("url").strip()
+        # alt 直接用一个简单的占位，避免换行
+        return f"![image]({url})"
+
+    md_text = pattern_multiline_img.sub(_repl_multiline_img, md_text)
+
+    return md_text
 
 
 # -----------------------
@@ -709,22 +775,22 @@ def post_survey_dialog():
 # -----------------------
 # 工具函数（向量检索）
 # -----------------------
-def load_vector_store():
-    if not ENTRIES_PATH.exists() or not EMB_PATH.exists():
-        raise FileNotFoundError(
-            f"Vector store not found. Please run build_baseline_from_indexes.py first.\n"
-            f"Expected files:\n  {ENTRIES_PATH}\n  {EMB_PATH}"
-        )
-    entries = json.loads(ENTRIES_PATH.read_text(encoding="utf-8"))
-    emb_matrix = np.load(EMB_PATH)
-    if emb_matrix.dtype != np.float32:
-        emb_matrix = emb_matrix.astype("float32")
-    return entries, emb_matrix
+# def load_vector_store():
+#     if not ENTRIES_PATH.exists() or not EMB_PATH.exists():
+#         raise FileNotFoundError(
+#             f"Vector store not found. Please run build_baseline_from_indexes.py first.\n"
+#             f"Expected files:\n  {ENTRIES_PATH}\n  {EMB_PATH}"
+#         )
+#     entries = json.loads(ENTRIES_PATH.read_text(encoding="utf-8"))
+#     emb_matrix = np.load(EMB_PATH)
+#     if emb_matrix.dtype != np.float32:
+#         emb_matrix = emb_matrix.astype("float32")
+#     return entries, emb_matrix
 
 
-@st.cache_resource
-def get_vs_cached():
-    return load_vector_store()
+# @st.cache_resource
+# def get_vs_cached():
+#     return load_vector_store()
 
 
 def embed_text(text: str) -> np.ndarray:
@@ -740,31 +806,45 @@ def cosine_sim_matrix(matrix: np.ndarray, query_vec: np.ndarray) -> np.ndarray:
 
 def retrieve_top_k(
     query: str,
-    entries: List[Dict[str, Any]],
-    emb_matrix: np.ndarray,
     top_k: int = 6,
 ) -> List[Dict[str, Any]]:
+    """
+    在 Qdrant 的 BASELINE_COLLECTION 里做向量搜索，
+    返回结构尽量保持和原来 entries+emb_matrix 版本一致。
+    """
     q_vec = embed_text(query)
-    sims = cosine_sim_matrix(emb_matrix, q_vec)
-    idxs = np.argsort(sims)[::-1][:top_k]
+    client_q = get_qdrant_client()
+
+    hits = client_q.search(
+        collection_name=BASELINE_COLLECTION,
+        query_vector=q_vec,
+        limit=top_k,
+        with_payload=True,
+    )
 
     results: List[Dict[str, Any]] = []
-    for rank, i in enumerate(idxs):
-        e = entries[i]
+    for rank, h in enumerate(hits, start=1):
+        p = h.payload or {}
+        # 兼容不同 payload 命名
         results.append(
             {
-                "rank": rank + 1,
-                "score": float(sims[i]),
-                "id": e.get("id"),
-                "source_type": e.get("source_type"),
-                "doc_title": e.get("doc_title"),
-                "source_id": e.get("source_id"),
-                "source_path":e.get("source_path"),
-                "text": e.get("text"),
+                "rank": rank,
+                "score": float(h.score or 0.0),
+                # 原 baseline entries 里是 "id"；如果你导入 Qdrant 时用的是 "raw_id"，这里兜底一下
+                "id": p.get("id") or p.get("raw_id") or h.id,
+                "source_type": p.get("source_type"),
+                "doc_title": p.get("doc_title"),
+                # baseline UI 下面会拿 source_id 去修图片链接，所以这里保留
+                "source_id": p.get("source_id") or p.get("source_path") or "",
+                "source_path": p.get("source_path"),
+                # 文本字段：你在 Qdrant 里可以叫 "text"、"source_chunk_md" 或 "raw_excerpt_md"
+                "text": p.get("text")
+                        or p.get("source_chunk_md")
+                        or p.get("raw_excerpt_md")
+                        or "",
             }
         )
     return results
-
 
 def call_llm_with_context(
     question: str,
@@ -974,11 +1054,11 @@ def main():
     maybe_show_pre_survey()
     init_state()
 
-    try:
-        entries, emb_matrix = get_vs_cached()
-    except FileNotFoundError as e:
-        st.error(str(e))
-        st.stop()
+    # try:
+    #     entries, emb_matrix = get_vs_cached()
+    # except FileNotFoundError as e:
+    #     st.error(str(e))
+    #     st.stop()
 
     # ⬇️ Show one-time intro popup/banner
     show_intro_banner()
@@ -1076,8 +1156,6 @@ def main():
                     turn_idx = st.session_state.turn_counter
                     retrieved = retrieve_top_k(
                         query=user_input,
-                        entries=entries,
-                        emb_matrix=emb_matrix,
                         top_k=6,
                     )
                     st.session_state.retrievals.append(retrieved)
@@ -1140,7 +1218,7 @@ def main():
                     if snippet is None:
                         st.caption("Snippet not found.")
                     else:
-                        st.write("DEBUG meta for", snippet)
+                        # st.write("DEBUG meta for", snippet)
                         src = snippet["source_type"]
                         doc = snippet.get("doc_title") or snippet.get("source_id") or "(unknown source)"
                         st.markdown(

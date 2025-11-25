@@ -12,17 +12,28 @@ import csv
 from datetime import datetime
 import os
 import re
-import markdown as md   # 👈 新增
+import markdown as md  # 👈 新增
 
 load_dotenv()
 OPENAI_MODEL = os.getenv("EBCS_MODEL", "gpt-5-mini")
 EMBED_MODEL = os.getenv("EBCS_EMBED_MODEL", "text-embedding-3-large")
+# Qdrant
+QDRANT_URL = os.getenv("QDRANT_URL")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
+POLICY_COLLECTION = os.getenv("QDRANT_POLICY_COLLECTION", "policy_docs")
+THESES_COLLECTION = os.getenv("QDRANT_THESES_COLLECTION", "thesis_segments")
 
-POLICY_INDEX_PATH = Path(os.getenv("POLICY_INDEX", "policy_docs_index.json"))
-THESES_INDEX_PATH = Path(os.getenv("THESES_INDEX", "thesis_corpus_index.json"))
+from qdrant_client import QdrantClient, models
 
+@st.cache_resource
+def get_qdrant_client():
+    return QdrantClient(
+        url=QDRANT_URL,
+        api_key=QDRANT_API_KEY,
+    )
 STAGES = ["proposal", "greenlight", "midterm", "final", "defense", "other"]
-MODES = ["exploration","precedents","diagnose","checklist","plan_synthesis","critique","ethics","defense_drill","other"]
+MODES = ["exploration", "precedents", "diagnose", "checklist", "plan_synthesis", "critique", "ethics", "defense_drill",
+         "other"]
 GAPS = ["content", "process", "knowledge", "precedent", "mixed", "unknown"]
 
 client = OpenAI()
@@ -39,7 +50,6 @@ CHAT_LOG_FILE = LOG_DIR / "chat_turns_ebcs.csv"
 EVIDENCE_LOG_FILE = LOG_DIR / "evidence_events_ebcs.csv"
 
 
-
 def append_csv_row(path: Path, fieldnames, row_dict):
     """Append one row to a CSV (create header if file doesn’t exist)."""
     file_exists = path.exists()
@@ -48,6 +58,7 @@ def append_csv_row(path: Path, fieldnames, row_dict):
         if not file_exists:
             writer.writeheader()
         writer.writerow(row_dict)
+
 
 # -----------------------
 # 工具函数
@@ -59,9 +70,11 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ebcs")
 
+
 def log_step(msg: str):
     logger.info(msg)
     print(msg)  # 本地跑的话直接在 terminal 里也能看到
+
 
 def login_page():
     # If already logged in, skip login screen
@@ -107,7 +120,6 @@ def login_page():
         st.session_state["user_id"] = pid
         st.success(f"Welcome, user{pid}!")
         st.rerun()
-
 
 
 # ------------------------
@@ -436,8 +448,9 @@ def pre_survey_dialog():
     if st.button("Submit", type="primary"):
         missing = []
 
-        if None in (stage, domain_short, rubric_familiarity,prior_exp_llm,prior_trust,topic_clarity,rq_confidence,
-                    rq_self_efficacy,method_self_efficacy,rubric_eval_knowledge,procedural_preference,procedural_acceptance):
+        if None in (stage, domain_short, rubric_familiarity, prior_exp_llm, prior_trust, topic_clarity, rq_confidence,
+                    rq_self_efficacy, method_self_efficacy, rubric_eval_knowledge, procedural_preference,
+                    procedural_acceptance):
             missing.append("Some required fields were not answered.")
 
         if missing:
@@ -481,6 +494,7 @@ def maybe_show_pre_survey():
         return
     # 第一次进入主界面时自动弹
     pre_survey_dialog()
+
 
 # ------------------------
 # Post Survey Dialog
@@ -700,9 +714,9 @@ def post_survey_dialog():
         missing = []
 
         if None in (perceived_usefulness, perceived_procedural_fairness, perceived_transparency,
-                    trust_after,clarity_improved,cognitive_load,satisfaction,
-                    usability_ease,procedural_rules_clarity,procedural_predictability,procedural_voice,
-                    evidence_engagement,evidence_cross_check,safety_support,trust_double_check,overtrust_concern):
+                    trust_after, clarity_improved, cognitive_load, satisfaction,
+                    usability_ease, procedural_rules_clarity, procedural_predictability, procedural_voice,
+                    evidence_engagement, evidence_cross_check, safety_support, trust_double_check, overtrust_concern):
             missing.append("Some required fields were not answered.")
 
         if missing:
@@ -740,6 +754,7 @@ def post_survey_dialog():
 
         st.success("Thank you for your feedback!")
         st.rerun()
+
 
 def show_intro_banner():
     """Show a one-time intro window explaining how to ask the coach."""
@@ -828,6 +843,7 @@ def extract_json(text: str):
     else:
         raise ValueError("No JSON found")
 
+
 def embed_text(text: str) -> List[float]:
     resp = client.embeddings.create(
         model=EMBED_MODEL,
@@ -836,63 +852,58 @@ def embed_text(text: str) -> List[float]:
     log_step("Step 1 done: embedding received.")
     return resp.data[0].embedding
 
+
 def cosine_sim_matrix(matrix: np.ndarray, query: np.ndarray) -> np.ndarray:
     denom = (np.linalg.norm(matrix, axis=1) * np.linalg.norm(query) + 1e-9)
     return (matrix @ query) / denom
 
-# -----------------------
-# 仓库：policy_docs
-# -----------------------
-class PolicyItem:
-    def __init__(self, raw: Dict[str, Any]):
-        self.id = raw["id"]
-        self.label = raw["label"]
-        self.description = raw["description"]
-        self.risk_level = raw.get("risk_level")
-        self.embedding = np.array(raw["embedding"], dtype="float32")
-        self.doc_title = raw.get("doc_title")
-        self.doc_stage = raw.get("doc_stage")
-        self.doc_mode = raw.get("doc_mode")
-        self.doc_gap = raw.get("doc_gap")
-        self.item_stage = raw.get("item_stage", self.doc_stage)
-        self.item_mode = raw.get("item_mode", self.doc_mode)
+
+# ========= Qdrant Repositories =========
+class PolicyItemFromPayload:
+    def __init__(self, payload: dict):
+        self.id = payload["raw_id"]
+        self.label = payload.get("label")
+        self.description = payload.get("description")
+        self.risk_level = payload.get("risk_level")
+        self.doc_title = payload.get("doc_title")
+        self.doc_stage = payload.get("doc_stage")
+        self.doc_mode = payload.get("doc_mode")
+        self.item_stage = payload.get("item_stage", self.doc_stage)
+        self.item_mode = payload.get("item_mode", self.doc_mode)
         self.source_type = "policy"
-        self.source_path = raw.get("source_path")
-        # 注意这里：policy 里 key 叫 source_chunk_md
+        self.source_path = payload.get("source_path")
         self.source_chunk_md = fix_raw_excerpt_md(
-            raw.get("source_chunk_md"),
-            self.source_path
+            payload.get("source_chunk_md"),
+            self.source_path,
         )
+        self.embedding = None  # 不再存本地 embedding
+
+
+class ThesisSegmentFromPayload:
+    def __init__(self, payload: dict):
+        self.id = payload["raw_id"]
+        self.label = payload.get("label", "")
+        self.summary = payload.get("summary") or payload.get("description") or ""
+        self.stage = payload.get("stage", payload.get("item_stage", "other"))
+        self.mode = payload.get("mode", payload.get("item_mode", "precedents"))
+        self.field = payload.get("field", "unknown")
+        self.source_path = payload.get("source_path")
+        self.doc_title = payload.get("doc_title")
+        self.source_type = payload.get("source_type", "thesis")
+        self.role = payload.get("role", "technical_precedent")
+        self.domain_tags = payload.get("domain_tags", [])
+        self.construct_tags = payload.get("construct_tags", [])
+        self.user_tags = payload.get("user_tags", [])
+        self.metric_tags = payload.get("metric_tags", [])
+        raw_md = payload.get("raw_excerpt_md") or payload.get("source_chunk_md")
+        self.source_chunk_md = fix_raw_excerpt_md(raw_md, self.source_path)
+        self.embedding = None
 
 
 class PolicyRepository:
-    def __init__(self, path: Path):
-        self.path = path
-        self.items: List[PolicyItem] = []    # ← 必须存在
-        self._matrix: np.ndarray | None = None
-        self._load()
-
-    def _load(self):
-        data = json.loads(self.path.read_text(encoding="utf-8"))
-        docs = data.get("docs", [])
-
-        for doc in docs:
-            doc_source_path = doc.get("source_path")
-
-            for item in doc.get("items", []):
-                if "embedding" not in item:
-                    continue
-
-                # 确保 source_path 存在
-                if "source_path" not in item:
-                    item["source_path"] = doc_source_path
-
-                self.items.append(PolicyItem(item))   # ← append 到 items
-
-        if self.items:
-            self._matrix = np.stack([it.embedding for it in self.items], axis=0)
-        else:
-            self._matrix = np.zeros((0, 1), dtype="float32")
+    def __init__(self, client: QdrantClient, collection_name: str = "policy_docs"):
+        self.client = client
+        self.collection_name = collection_name
 
     def scored_search(
         self,
@@ -901,125 +912,53 @@ class PolicyRepository:
         mode: str,
         gap: str,
         top_k: int = 12,
-    ) -> List[tuple["PolicyItem", float]]:
-        """
-        返回 (item, score) 列表，score 已经包含 stage/mode/gap 的 bonus。
-        用于后续的 cross-repo fusion。
-        """
-        if self._matrix is None or len(self.items) == 0:
+    ) -> List[tuple[PolicyItemFromPayload, float]]:
+        if not query_emb:
             return []
-        q = np.array(query_emb, dtype="float32")
-        sims = cosine_sim_matrix(self._matrix, q)
 
-        scores: List[float] = []
-        for idx, item in enumerate(self.items):
+        # ① 调用 query_points，得到一个响应对象
+        resp = self.client.query_points(
+            collection_name=self.collection_name,
+            query=query_emb,
+            limit=60,
+            with_payload=True,
+        )
+        # ② 真正的 hits 在 resp.points 里
+        hits = resp.points
+        print(f"{resp.points}")
+        results = []
+        print(f"hits:{hits}")
+        for h in hits:
+            p = h.payload or {}
+            base_sim = h.score or 0.0
             bonus = 0.0
-            if item.item_stage == stage:
+            item_stage = p.get("item_stage") or p.get("doc_stage")
+            item_mode = p.get("item_mode") or p.get("doc_mode")
+
+            if item_stage == stage:
                 bonus += 0.10
-            elif item.doc_stage == stage:
+            elif p.get("doc_stage") == stage:
                 bonus += 0.05
-            if item.item_mode == mode:
+            if item_mode == mode:
                 bonus += 0.10
-            elif item.doc_mode == mode:
+            elif p.get("doc_mode") == mode:
                 bonus += 0.05
+
             if gap in ("process", "content") and mode in ("checklist", "diagnose", "ethics"):
                 bonus += 0.05
-            scores.append(float(sims[idx] + bonus))
 
-        idxs = np.argsort(scores)[::-1][:top_k]
-        return [(self.items[i], scores[i]) for i in idxs]
+            final_score = float(base_sim + bonus)
+            item = PolicyItemFromPayload(p)
+            results.append((item, final_score))
 
-    def search(
-        self,
-        query_emb: List[float],
-        stage: str,
-        mode: str,
-        gap: str,
-        top_k: int = 5,
-    ) -> List["PolicyItem"]:
-        """
-        向后兼容的老接口：只返回 item，不带 score。
-        """
-        return [it for (it, _s) in self.scored_search(query_emb, stage, mode, gap, top_k=top_k)]
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results[:top_k]
 
-
-
-
-# -----------------------
-# 仓库：thesis_corpus
-# -----------------------
-
-class ThesisSegment:
-    def __init__(self, raw: Dict[str, Any]):
-        self.id = raw["id"]
-        self.label = raw.get("label", "")
-
-        # 这里改成 get + 后备到 description
-        self.summary = raw.get("summary") or raw.get("description") or ""
-
-        self.embedding = np.array(raw["embedding"], dtype="float32")
-
-        self.stage = raw.get("stage", raw.get("item_stage", "other"))
-        self.mode = raw.get("mode", raw.get("item_mode", "precedents"))
-        self.field = raw.get("field", "unknown")
-
-        self.source_path = raw.get("source_path")
-        self.doc_title = raw.get("doc_title")
-        # 如果有 source_type 就用原来的，否则默认 thesis
-        self.source_type = raw.get("source_type", "thesis")
-        self.role = raw.get("role", "technical_precedent")
-
-        self.domain_tags = raw.get("domain_tags", [])
-        self.construct_tags = raw.get("construct_tags", [])
-        self.user_tags = raw.get("user_tags", [])
-        self.metric_tags = raw.get("metric_tags", [])
-
-        # 兼容 thesis JSON 里的 raw_excerpt_md & policy 里的 source_chunk_md
-        raw_md = raw.get("raw_excerpt_md") or raw.get("source_chunk_md")
-        self.source_chunk_md = fix_raw_excerpt_md(raw_md, self.source_path)
 
 class ThesisRepository:
-    def __init__(self, path: Path):
-        self.path = path
-        self.segments: List[ThesisSegment] = []
-        self._matrix: np.ndarray | None = None
-        self._load()
-
-    def _load(self):
-        text = self.path.read_text(encoding="utf-8")
-        data = json.loads(text)
-
-        blocks = []
-
-        if isinstance(data, dict) and "docs" in data:
-            blocks = [data]
-        elif isinstance(data, list):
-            # 兼容 [ { "docs": ...} ] 或 [ [ { "docs": ...} ] ]
-            # 先把里面所有元素 flatten 成 dict
-            flat = []
-            for x in data:
-                if isinstance(x, list):
-                    flat.extend(x)
-                else:
-                    flat.append(x)
-            blocks = flat
-        else:
-            raise ValueError(f"Unexpected JSON structure in {self.path}")
-
-        for block in blocks:
-            docs = block.get("docs", [])
-            for doc in docs:
-                for seg in doc["segments"]:
-                    if "embedding" not in seg:
-                        continue
-                    if seg.get("raw_excerpt_md") or seg.get("source_chunk_md"):
-                        print("SEG WITH HINT:", seg["id"])
-                    self.segments.append(ThesisSegment(seg))
-
-        if self.segments:
-            self._matrix = np.stack([s.embedding for s in self.segments], axis=0)
-        else:
-            self._matrix = np.zeros((0, 1), dtype="float32")
+    def __init__(self, client: QdrantClient, collection_name: str = "thesis_segments"):
+        self.client = client
+        self.collection_name = collection_name
 
     def scored_search(
         self,
@@ -1028,45 +967,45 @@ class ThesisRepository:
         mode: str,
         gap: str,
         top_k: int = 16,
-    ) -> List[tuple["ThesisSegment", float]]:
-        """
-        返回 (segment, score) 列表，score 已含 stage/mode/gap 的 bonus。
-        """
-        if self._matrix is None or len(self.segments) == 0:
+    ) -> List[tuple[ThesisSegmentFromPayload, float]]:
+        if not query_emb:
             return []
-        q = np.array(query_emb, dtype="float32")
-        sims = cosine_sim_matrix(self._matrix, q)
 
-        scores: List[float] = []
-        for idx, seg in enumerate(self.segments):
+        resp = self.client.query_points(
+            collection_name=self.collection_name,
+            query=query_emb,
+            limit=80,
+            with_payload=True,
+        )
+        hits = resp.points
+
+        results = []
+        for h in hits:
+            p = h.payload or {}
+            base_sim = h.score or 0.0
+
+            seg_stage = p.get("stage", "other")
+            seg_mode = p.get("mode", "precedents")
+            role = p.get("role", "technical_precedent")
+
             bonus = 0.0
-            if seg.stage == stage:
+            if seg_stage == stage:
                 bonus += 0.08
-            if seg.mode == mode:
+            if seg_mode == mode:
                 bonus += 0.08
             if mode in ("precedents", "exploration"):
                 bonus += 0.12
             if gap == "precedent":
                 bonus += 0.10
-            if getattr(seg, "role", "technical_precedent") == "technical_precedent":
+            if role == "technical_precedent":
                 bonus += 0.02
-            scores.append(float(sims[idx] + bonus))
 
-        idxs = np.argsort(scores)[::-1][:top_k]
-        return [(self.segments[i], scores[i]) for i in idxs]
+            final_score = float(base_sim + bonus)
+            item = ThesisSegmentFromPayload(p)
+            results.append((item, final_score))
 
-    def search(
-        self,
-        query_emb: List[float],
-        stage: str,
-        mode: str,
-        gap: str,
-        top_k: int = 8,
-    ) -> List["ThesisSegment"]:
-        """
-        向后兼容：只返回 segment。
-        """
-        return [seg for (seg, _s) in self.scored_search(query_emb, stage, mode, gap, top_k=top_k)]
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results[:top_k]
 
 # -----------------------
 # EvidenceCard + 融合
@@ -1074,12 +1013,12 @@ class ThesisRepository:
 
 class EvidenceCard:
     def __init__(
-        self,
-        evid_id: str,
-        title: str,
-        snippet: str,
-        source_type: Literal["policy", "thesis"],
-        meta: Dict[str, Any],
+            self,
+            evid_id: str,
+            title: str,
+            snippet: str,
+            source_type: Literal["policy", "thesis"],
+            meta: Dict[str, Any],
     ):
         self.id = evid_id
         self.title = title
@@ -1089,9 +1028,9 @@ class EvidenceCard:
 
 
 def llm_rerank_evidence(
-    query_text: str,
-    candidates: List[Dict[str, Any]],
-    top_k: int = 16,
+        query_text: str,
+        candidates: List[Dict[str, Any]],
+        top_k: int = 16,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Self-RAG 风格的 rerank：
@@ -1181,17 +1120,19 @@ def llm_rerank_evidence(
         }
     return results
 
+
 from functools import lru_cache
 
+
 def log_chat_turn(
-    user_id: str,
-    round_index: int,
-    timestamp_question: str,
-    timestamp_answer: str,
-    question: str,
-    plan_obj: "CoachPlan",
-    evidence_cards: List[EvidenceCard],
-    alignment: Dict[str, Any],
+        user_id: str,
+        round_index: int,
+        timestamp_question: str,
+        timestamp_answer: str,
+        question: str,
+        plan_obj: "CoachPlan",
+        evidence_cards: List[EvidenceCard],
+        alignment: Dict[str, Any],
 ):
     """
     仿 baseline 的 chat_turns_baseline.csv：
@@ -1231,13 +1172,13 @@ def log_chat_turn(
 
 
 def log_evidence_event(
-    user_id: str,
-    round_index: int,
-    event_type: str,
-    evid: EvidenceCard | None = None,
-    rec_index: int | None = None,
-    rec_title: str | None = None,
-    extra: Dict[str, Any] | None = None,
+        user_id: str,
+        round_index: int,
+        event_type: str,
+        evid: EvidenceCard | None = None,
+        rec_index: int | None = None,
+        rec_title: str | None = None,
+        extra: Dict[str, Any] | None = None,
 ):
     """
     仿 baseline 的 snippet_clicks_baseline.csv：
@@ -1250,8 +1191,8 @@ def log_evidence_event(
         row = {
             "timestamp_click": datetime.utcnow().isoformat(),
             "user_id": user_id,
-            "turn_index": round_index,      # 用相同列名对齐 baseline
-            "event_type": event_type,       # show/hide/click/expand…
+            "turn_index": round_index,  # 用相同列名对齐 baseline
+            "event_type": event_type,  # show/hide/click/expand…
             # evidence 基本信息（如果有）
             "evid_id": getattr(evid, "id", None),
             "source_type": getattr(evid, "source_type", None),
@@ -1276,6 +1217,7 @@ def log_evidence_event(
 
 import re
 
+
 def _norm_heading(text: str) -> str:
     """Normalize heading text for matching (lowercase, collapse spaces, drop #)."""
     # remove leading # and surrounding spaces
@@ -1284,15 +1226,16 @@ def _norm_heading(text: str) -> str:
     t = re.sub(r"\s+", " ", t)
     return t
 
+
 def fuse_evidence(
-    query_text: str,
-    query_emb: List[float],
-    stage: str,
-    mode: str,
-    gap: str,
-    policy_repo: PolicyRepository,
-    thesis_repo: ThesisRepository,
-    total_k: int = 12,
+        query_text: str,
+        query_emb: List[float],
+        stage: str,
+        mode: str,
+        gap: str,
+        policy_repo: PolicyRepository,
+        thesis_repo: ThesisRepository,
+        total_k: int = 12,
 ) -> List[EvidenceCard]:
     """
     RAG-Fusion + Self-RAG 风格的 evidence fusion：
@@ -1540,7 +1483,7 @@ def fuse_evidence(
 # -----------------------
 
 def route_and_maybe_ask(
-    conversation_text: str,
+        conversation_text: str,
 ) -> Dict[str, Any]:
     """
     Router：推断 stage / mode / gap，并判断是否信息足够。
@@ -1662,11 +1605,11 @@ def route_and_maybe_ask(
 
 
 def generate_subqueries(
-    task_context: str,
-    stage: str,
-    mode: str,
-    gap: str,
-    max_queries: int = 6,
+        task_context: str,
+        stage: str,
+        mode: str,
+        gap: str,
+        max_queries: int = 6,
 ) -> List[Dict[str, Any]]:
     """
     RAG-Fusion 风格的子查询生成：
@@ -1759,7 +1702,7 @@ def generate_subqueries(
         w = max(0.3, min(1.0, w))
         cleaned.append(
             {
-                "id": q.get("id", f"Q{i+1}"),
+                "id": q.get("id", f"Q{i + 1}"),
                 "text": text,
                 "type": q_type,
                 "weight": w,
@@ -1771,7 +1714,7 @@ def generate_subqueries(
         while len(cleaned) < 3:
             cleaned.append(
                 {
-                    "id": f"Q{len(cleaned)+1}",
+                    "id": f"Q{len(cleaned) + 1}",
                     "text": base_q,
                     "type": "mixed",
                     "weight": 0.6,
@@ -1781,9 +1724,9 @@ def generate_subqueries(
 
 
 def build_followup_question(
-    task_context: str,
-    routing: Dict[str, Any],
-    followup_count: int,
+        task_context: str,
+        routing: Dict[str, Any],
+        followup_count: int,
 ) -> str:
     """
     使用模型来生成澄清问题：
@@ -1845,6 +1788,7 @@ def build_followup_question(
             "为了给你更具体的建议，可以补充一下：项目大概做什么、主要用户是谁、"
             "以及你现在最关心的 1–2 个评价指标是什么？"
         )
+
 
 def build_exhausted_warning(
         task_context: str,
@@ -1946,6 +1890,7 @@ def build_exhausted_warning(
             "I can give you much more tailored guidance."
         )
 
+
 # -----------------------
 # Evidence-bound 回复：JSON 结构化输出
 # -----------------------
@@ -1988,24 +1933,28 @@ def call_llm(system_prompt: str, user_prompt: str) -> str:
 
 from pydantic import BaseModel, Field
 from typing import List, Optional
+
 class Recommendation(BaseModel):
     title: str
     evidence_ids: List[str] = Field(default_factory=list)
     reason: str
     action: str
+
+
 class CoachPlan(BaseModel):
     overview: str
     recommendations: List[Recommendation]
     follow_up: Optional[str] = None
 
+
 def generate_coach_plan(
-    user_input: str,
-    stage: str,
-    mode: str,
-    gap: str,
-    task_context: str,
-    evidence_cards: List[EvidenceCard],
-    history: List[Dict[str, str]],
+        user_input: str,
+        stage: str,
+        mode: str,
+        gap: str,
+        task_context: str,
+        evidence_cards: List[EvidenceCard],
+        history: List[Dict[str, str]],
 ) -> CoachPlan:
     """
     使用 responses.parse + Pydantic，直接拿到结构化的 CoachPlan 对象。
@@ -2080,12 +2029,17 @@ def generate_coach_plan(
 
     plan: CoachPlan = response.output_parsed
     return plan
+
+
 # -----------------------
 # Streamlit 状态管理
 # -----------------------
+
+# ========= 状态初始化 =========
 @st.cache_resource
 def load_repositories():
-    return PolicyRepository(POLICY_INDEX_PATH), ThesisRepository(THESES_INDEX_PATH)
+    client_q = get_qdrant_client()
+    return PolicyRepository(client_q, POLICY_COLLECTION), ThesisRepository(client_q, THESES_COLLECTION)
 
 
 def init_state():
@@ -2122,45 +2076,91 @@ def init_state():
 
 
 def fix_raw_excerpt_md(raw_excerpt_md: str, source_path: str) -> str:
-
     """
-    在 raw_excerpt_md 中寻找 [xxx](images/xxx)
-    变成 [xxx](https://delft-public-img.s3.eu-west-1.amazonaws.com/<source_path_without_repo>/images/xxx)
+    1）把本地相对 markdown 图片链接：
+        [alt](images/...xyz)
+        ![alt](images/...xyz)
+       改成 S3 上的绝对路径；
 
-    支持 [alt](images/...) 和 ![alt](images/...)
+    2）把所有 markdown 链接/图片里的 URL 里的空格替换成 %20；
+
+    3a）如果发现形如  [xxx](https://... .jpg/.png) 这种“指向图片的普通链接”，
+        自动改成图片语法  ![xxx](https://... .jpg/.png)
+
+    3b）如果发现  alt 里有很多换行的超长图片写法，
+        统一收缩成  ![image](url)  避免 markdown 解析失败。
     """
 
-    if not raw_excerpt_md or not source_path:
-        print("no raw_excerpt_md or source_path")
+    if not raw_excerpt_md:
         return raw_excerpt_md
 
-    # 先拿到目录部分，例如：
-    # source_path = "repo/Beyond.../auto/Graduation_report.md"
-    # -> dir_path = "repo/Beyond.../auto"
-    dir_path = os.path.dirname(source_path)
+    md_text = raw_excerpt_md
 
-    # 去掉开头的 "repo/"（如果有）
-    m = re.match(r"^repo[^/]*/(.*)$", dir_path)
-    if m:
-        dir_path_no_repo = m.group(1)
-    else:
-        dir_path_no_repo = dir_path
+    # ---------- 1. 处理本地相对路径 images/... -> S3 绝对路径 ----------
+    if source_path:
+        import os
+        dir_path = os.path.dirname(source_path)
 
-    # 构造前缀，例如：
-    IMG_BASE_URL = "https://delft-public-img.s3.eu-west-1.amazonaws.com/"
-    # "https://.../Beyond.../auto/"
-    prefix = IMG_BASE_URL + dir_path_no_repo.strip("/") + "/"
+        # Drop "repo..." 前缀
+        m = re.match(r"^repo[^/]*/(.*)$", dir_path)
+        if m:
+            dir_path_no_repo = m.group(1)
+        else:
+            dir_path_no_repo = dir_path
 
-    # 匹配 [xxx](images/yyy) 或 ![xxx](images/yyy)
-    # 关键改动：用 [\s\S]*? 代替 .*?，并允许跨行；path 部分不允许换行
-    pattern = re.compile(r'(!?\[[^\]]*\])\((?:\.?/)?(images/[^)\s]+)\)')
+        IMG_BASE_URL = "https://delft-public-img.s3.eu-west-1.amazonaws.com/"
+        prefix = IMG_BASE_URL + dir_path_no_repo.strip("/") + "/"
 
-    def _repl(m: re.Match) -> str:
-        alt = m.group(1)
-        rel = m.group(2)  # images/7e5a49b....jpg
-        full_url = prefix + rel  # https://.../<dir>/images/7e5a...
-        return f"{alt}({full_url})"
-    return pattern.sub(_repl, raw_excerpt_md)
+        # 匹配 [..](images/...) 或 ![..](images/...)
+        pattern_local_img = re.compile(r'(!?\[[^\]]*\])\((?:\.?/)?(images/[^)\s]+)\)')
+
+        def _repl_local(m: re.Match) -> str:
+            alt = m.group(1)
+            rel = m.group(2)
+            rel = rel.replace(" ", "%20")
+            full_url = prefix + rel
+            return f"{alt}({full_url})"
+
+        md_text = pattern_local_img.sub(_repl_local, md_text)
+
+    # ---------- 2. 所有 markdown URL 里的空格 -> %20 ----------
+    pattern_any_link = re.compile(r'(\]\()([^)]+)\)')
+
+    def _repl_space(m: re.Match) -> str:
+        url = m.group(2)
+        safe_url = url.replace(" ", "%20")
+        return f"]({safe_url})"
+
+    md_text = pattern_any_link.sub(_repl_space, md_text)
+
+    # ---------- 3a. 指向图片的普通链接 -> 图片语法 ----------
+    pattern_link_to_img = re.compile(
+        r'\[(?P<alt>[^\]]*)\]\((?P<url>https?://[^)\s]+\.(?:png|jpe?g|gif|svg))\)'
+    )
+
+    def _repl_link_to_img(m: re.Match) -> str:
+        alt = m.group("alt").strip()
+        url = m.group("url").strip()
+        return f"![{alt}]({url})"
+
+    md_text = pattern_link_to_img.sub(_repl_link_to_img, md_text)
+
+    # ---------- 3b. 多行 alt 的图片，统一压缩成 ![image](url) ----------
+    # 匹配：  ![ 任意多行文字 ](https://...jpg/png/gif/svg)
+    pattern_multiline_img = re.compile(
+        r'!\[(?P<alt>.*?)\]\((?P<url>https?://[^)\s]+\.(?:png|jpe?g|gif|svg))\)',
+        re.DOTALL,
+    )
+
+    def _repl_multiline_img(m: re.Match) -> str:
+        url = m.group("url").strip()
+        # alt 直接用一个简单的占位，避免换行
+        return f"![image]({url})"
+
+    md_text = pattern_multiline_img.sub(_repl_multiline_img, md_text)
+
+    return md_text
+
 
 def toggle_evidence_panel(evid_id: str):
     """
@@ -2168,23 +2168,23 @@ def toggle_evidence_panel(evid_id: str):
     - 如果当前已经显示 & 选中的就是它 → 关闭 panel（相当于第二次点击）
     - 否则 → 打开 panel并选中该 evidence
     """
-    prev    = st.session_state.get("selected_evidence")
+    prev = st.session_state.get("selected_evidence")
     showing = st.session_state.get("show_evidence_panel", False)
     if showing and prev == evid_id:
         # 第二次点同一个 → 关掉
         st.session_state.show_evidence_panel = False
-        st.session_state.selected_evidence   = None
+        st.session_state.selected_evidence = None
 
     else:
         # 打开 + 切换选中对象
         st.session_state.show_evidence_panel = True
-        st.session_state.selected_evidence   = evid_id
+        st.session_state.selected_evidence = evid_id
 
 
 def render_plan_as_cards(
-    plan: Dict[str, Any],
-    evidence_index: Dict[str, EvidenceCard],
-    key_prefix: str = "",
+        plan: Dict[str, Any],
+        evidence_index: Dict[str, EvidenceCard],
+        key_prefix: str = "",
 ):
     """JSON plan -> Action 卡片；Evidence 变成 title 下面的小按钮，点击后高亮右侧卡片。"""
     overview = plan.get("overview", "")
@@ -2299,7 +2299,7 @@ div[class*="st-key-evchip-rubric"] button {
                     rec_title=title,
                 )
                 st.session_state[expand_flag_key] = True
-        # with st.container():
+            # with st.container():
             # 卡片外框 + 标题
             st.markdown(
                 f"""
@@ -2314,8 +2314,10 @@ div[class*="st-key-evchip-rubric"] button {
             )
             # ---- Title 正下方的 evidence 按钮行 ----
             if eid_list:
-                if idx==1:
-                    st.markdown("<p style='color: #f8bfbf;padding-top: 0.8rem;margin-bottom: 0.5rem;'>Click below the Evidence button to show the raw text; double-click to hide it.</p>",unsafe_allow_html=True)
+                if idx == 1:
+                    st.markdown(
+                        "<p style='color: #f8bfbf;padding-top: 0.8rem;margin-bottom: 0.5rem;'>Click below the Evidence button to show the raw text; double-click to hide it.</p>",
+                        unsafe_allow_html=True)
                 # 开一个 row 容器，主要用于 margin 控制
                 st.markdown('<div class="ebcs-evidence-row">', unsafe_allow_html=True)
                 # 用一个空的 container 承载多个 st.button
@@ -2327,7 +2329,7 @@ div[class*="st-key-evchip-rubric"] button {
                             continue
 
                         is_selected = (
-                            st.session_state.get("selected_evidence") == eid
+                                st.session_state.get("selected_evidence") == eid
                         )
                         src = "rubric" if ev.source_type == "policy" else "thesis"
                         label = f"{eid} · {src}"
@@ -2385,10 +2387,10 @@ def build_export_text(plan: Dict[str, Any]) -> str:
         lines.append("")
     lines.append("Recommendations:")
     for i, rec in enumerate(plan.get("recommendations", []), 1):
-        lines.append(f"{i}. {rec.get('title','')}")
+        lines.append(f"{i}. {rec.get('title', '')}")
         lines.append(f"   Evidence: {', '.join(rec.get('evidence_ids', []))}")
-        lines.append(f"   Reason: {rec.get('reason','')}")
-        lines.append(f"   Action: {rec.get('action','')}")
+        lines.append(f"   Reason: {rec.get('reason', '')}")
+        lines.append(f"   Action: {rec.get('action', '')}")
         lines.append("")
     return "\n".join(lines).strip()
 
@@ -2540,7 +2542,7 @@ def main():
         padding: 0 !important;
         margin: 0 auto !important;       /* center horizontally */
     }
-    
+
 /* Style the <p> inside all radio labels */
 label[data-testid="stWidgetLabel"] p {
     font-size: 1.1rem !important;
@@ -2571,7 +2573,7 @@ label[data-testid="stWidgetLabel"] p {
 
         # 统一的 evidence 索引（给左栏按钮 + 右栏卡片用）
         evidence_index = {e.id: e for e in st.session_state.evidence_cards}
-        last_plan: Dict[str, Any] | None = None
+        # last_plan: Dict[str, Any] | None = None
 
         # ✅ 根据状态决定是否有右侧列
         if st.session_state.get("show_evidence_panel", False):
@@ -2597,7 +2599,7 @@ label[data-testid="stWidgetLabel"] p {
                     plan_dict = msg["plan"]
                     last_plan = plan_dict
                     with st.chat_message("assistant"):
-                        render_plan_as_cards(plan_dict, evidence_index,key_prefix=f"msg{i}_")
+                        render_plan_as_cards(plan_dict, evidence_index, key_prefix=f"msg{i}_")
                 else:
                     with st.chat_message("assistant"):
                         st.markdown(msg.get("content", ""))
@@ -2649,7 +2651,8 @@ label[data-testid="stWidgetLabel"] p {
                                 "enough_info": routing.get("enough_info", False),
                             }
                         )
-                        follow_status.write(f"You are on {routing.get('stage', align['stage'])}, {routing.get('mode', align['mode'])}, {routing.get('mode', align['mode'])}")
+                        follow_status.write(
+                            f"You are on {routing.get('stage', align['stage'])}, {routing.get('mode', align['mode'])}, {routing.get('mode', align['mode'])}")
                         count = st.session_state.followup_count
                         MAX_FOLLOWUP = 5
 
@@ -2924,6 +2927,7 @@ label[data-testid="stWidgetLabel"] p {
     # # ---------- Debug：内部 Stage×Mode×Gap 状态 ----------
     with st.expander("Debug：内部 Stage × Mode × Gap 状态（开发用）"):
         st.json(st.session_state.alignment)
+
 
 if __name__ == "__main__":
     main()

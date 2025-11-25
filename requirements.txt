@@ -5,3 +5,4 @@ pdfplumber
 pydantic
 numpy
 markdown
+qdrant-client
